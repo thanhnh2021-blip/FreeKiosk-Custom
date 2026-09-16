@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import { View, Text, TouchableOpacity, StyleSheet, Image, ScrollView, FlatList, useWindowDimensions } from 'react-native';
+import { View, Text, TouchableOpacity, StyleSheet, Image, ImageBackground, ScrollView, FlatList, useWindowDimensions } from 'react-native';
 import StatusBar from './StatusBar';
 import Icon from './Icon';
 import AppLauncherModule, { AppInfo } from '../utils/AppLauncherModule';
@@ -219,9 +219,15 @@ const ExternalAppOverlay: React.FC<ExternalAppOverlayProps> = ({
   }
 
   // Multi-app mode: show app grid (home screen)
-  if (isMultiAppMode && !isAppLaunched) {
-    return (
-      <View style={styles.container} onTouchStart={handleGridTouch}>
+if (isMultiAppMode && !isAppLaunched) {
+  return (
+    <ImageBackground
+      source={require('../assets/images/multiapp_background.jpg')}
+      style={styles.multiAppBackground}
+      resizeMode="cover"
+      onTouchStart={handleGridTouch}
+    >
+      <View style={styles.multiAppOverlay}>
         {showStatusBar && (
           <StatusBar
             showBattery={showBattery}
