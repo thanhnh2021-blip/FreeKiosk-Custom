@@ -1184,10 +1184,11 @@ class MainActivity : ReactActivity() {
       val featureEnabled = getAsyncStorageValue("@kiosk_tap_to_settings_native_enabled", "true") == "true"
       val displayMode = getAsyncStorageValue("@kiosk_display_mode", "webview")
       val returnMode = getAsyncStorageValue("@kiosk_return_mode", "tap_anywhere")
-      // Only active where the JS path is the sole escape: WebView/media + tap_anywhere.
-      // (button mode has its own RN return button; external_app uses OverlayService.)
+      // Native fallback for all tap-anywhere kiosk surfaces, including Multi-App Home.
+      // Activity-level dispatchTouchEvent sees the gesture before RN children (FlatList/buttons),
+      // so the escape works reliably on the Multi-App launcher background too.
       tapSettingsEnabled = featureEnabled &&
-        (displayMode == "webview" || displayMode == "media_player") &&
+        (displayMode == "webview" || displayMode == "media_player" || displayMode == "external_app") &&
         returnMode == "tap_anywhere"
       tapSettingsRequiredTaps = getAsyncStorageValue("@kiosk_return_tap_count", "5").toIntOrNull()?.coerceIn(2, 20) ?: 5
       tapSettingsTimeoutMs = getAsyncStorageValue("@kiosk_return_tap_timeout", "1500").toLongOrNull()?.coerceIn(500L, 5000L) ?: 1500L

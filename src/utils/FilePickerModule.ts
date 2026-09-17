@@ -34,6 +34,8 @@ interface SavedJsonFile {
 interface FilePickerModuleType {
   /** Open file picker for single media selection */
   pickMedia(mediaType: 'video' | 'image' | 'any'): Promise<PickedFile>;
+  /** Open a dedicated image picker for the Multi-App launcher background */
+  pickBackgroundImage(): Promise<PickedFile>;
   /** Open file picker for multiple media selection */
   pickMultipleMedia(mediaType: 'video' | 'image' | 'any'): Promise<PickedFile[]>;
   /** Open file picker for JSON file selection (backup import). Uses SAF to bypass Scoped Storage. */

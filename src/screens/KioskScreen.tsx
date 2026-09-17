@@ -108,6 +108,7 @@ const KioskScreen: React.FC<KioskScreenProps> = ({ navigation }) => {
   // Managed Apps (multi-app mode, background apps, accessibility whitelist)
   const [managedApps, setManagedApps] = useState<import('../types/managedApps').ManagedApp[]>([]);
   const [externalAppMode, setExternalAppMode] = useState<'single' | 'multi'>('single');
+  const [multiAppBackgroundPath, setMultiAppBackgroundPath] = useState<string>('');
   const externalAppModeRef = useRef<'single' | 'multi'>('single');
   
   // Spatial proximity detection for N-tap (WebView mode)
@@ -1699,6 +1700,7 @@ const KioskScreen: React.FC<KioskScreenProps> = ({ navigation }) => {
       // Load external app settings
       const savedDisplayMode = (str(K.DISPLAY_MODE) ?? 'webview') as 'webview' | 'external_app' | 'media_player';
       const savedExternalAppPackage = str(K.EXTERNAL_APP_PACKAGE);
+      const savedMultiAppBackgroundPath = str(K.MULTI_APP_BACKGROUND_PATH) ?? '';
       const savedAutoRelaunchApp = bool(K.AUTO_RELAUNCH_APP, false);
       console.log('[KioskScreen] savedDisplayMode:', savedDisplayMode, 'savedExternalAppPackage:', savedExternalAppPackage, 'savedAutoRelaunchApp:', savedAutoRelaunchApp);
 
@@ -1735,6 +1737,7 @@ const KioskScreen: React.FC<KioskScreenProps> = ({ navigation }) => {
       // Load external app sub-mode (single vs multi)
       const savedExternalAppMode = (str(K.EXTERNAL_APP_MODE) ?? 'single') as 'single' | 'multi';
       setExternalAppMode(savedExternalAppMode);
+      setMultiAppBackgroundPath(savedMultiAppBackgroundPath);
       externalAppModeRef.current = savedExternalAppMode;
       console.log('[KioskScreen] External app mode:', savedExternalAppMode);
       
@@ -2869,6 +2872,7 @@ const KioskScreen: React.FC<KioskScreenProps> = ({ navigation }) => {
           externalAppPackage={externalAppPackage}
           managedApps={managedApps}
           externalAppMode={externalAppMode}
+          multiAppBackgroundPath={multiAppBackgroundPath}
           isAppLaunched={isAppLaunched}
           backButtonMode={backButtonMode}
           returnTapCount={returnTapCount}

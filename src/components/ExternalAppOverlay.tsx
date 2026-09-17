@@ -12,6 +12,7 @@ interface ExternalAppOverlayProps {
   managedApps?: ManagedApp[];
   /** External app sub-mode: single (classic) or multi (grid) */
   externalAppMode?: 'single' | 'multi';
+  multiAppBackgroundPath?: string;
   isAppLaunched: boolean;
   backButtonMode: string;
   /** Number of taps to return to settings (default 5) */
@@ -41,6 +42,7 @@ const ExternalAppOverlay: React.FC<ExternalAppOverlayProps> = ({
   externalAppPackage,
   managedApps = [],
   externalAppMode = 'single',
+  multiAppBackgroundPath = '',
   isAppLaunched,
   backButtonMode,
   returnTapCount = 5,
@@ -222,7 +224,7 @@ const ExternalAppOverlay: React.FC<ExternalAppOverlayProps> = ({
   if (isMultiAppMode && !isAppLaunched) {
     return (
       <ImageBackground
-        source={require('../assets/images/multiapp_background.jpg')}
+        source={multiAppBackgroundPath ? { uri: multiAppBackgroundPath } : require('../assets/images/multiapp_background.jpg')}
         style={styles.multiAppBackground}
         resizeMode="cover"
         onTouchStart={handleGridTouch}

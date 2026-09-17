@@ -65,6 +65,7 @@ const BACKUP_KEYS = [
   '@kiosk_return_mode',
   '@kiosk_return_button_position',
   '@kiosk_volume_up_5tap_enabled',
+  '@kiosk_multiapp_background_path',
   // Blocking Overlays
   '@kiosk_blocking_overlays_enabled',
   '@kiosk_blocking_overlays_regions',

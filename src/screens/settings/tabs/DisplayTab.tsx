@@ -4,7 +4,7 @@
  */
 
 import React from 'react';
-import { View, Text, TouchableOpacity, Alert, StyleSheet } from 'react-native';
+import { View, Text, TouchableOpacity, Alert, StyleSheet, Image } from 'react-native';
 import Icon from '../../../components/Icon';
 import {
   SettingsSection,
@@ -85,6 +85,12 @@ interface DisplayTabProps {
   onPauseWebMediaWhenHiddenChange: (value: boolean) => void;
   intercomModeEnabled: boolean;
   onIntercomModeChange: (value: boolean) => void;
+
+  // Multi-App launcher background
+  multiAppBackgroundPath: string;
+  onPickMultiAppBackground: () => void;
+  onClearMultiAppBackground: () => void;
+  pickingMultiAppBackground: boolean;
 
   // Screensaver
   screensaverEnabled: boolean;
@@ -202,6 +208,10 @@ const DisplayTab: React.FC<DisplayTabProps> = ({
   onScreensaverVideoLoopChange,
   onPickScreensaverMedia,
   pickingScreensaverMedia,
+  multiAppBackgroundPath,
+  onPickMultiAppBackground,
+  onClearMultiAppBackground,
+  pickingMultiAppBackground,
   motionEnabled,
   onMotionEnabledChange,
   motionSensitivity,
@@ -418,6 +428,25 @@ const DisplayTab: React.FC<DisplayTabProps> = ({
       </SettingsSection>
       )}
       
+      {displayMode === 'external_app' && (
+        <SettingsSection title="Multi-App Home Background" icon="image">
+          <SettingsInfoBox variant="info">
+            <Text style={styles.infoText}>Choose a JPG or PNG. The selected image is stored in FreeKiosk and can be changed later without rebuilding the APK.</Text>
+          </SettingsInfoBox>
+          {multiAppBackgroundPath ? (
+            <Image source={{ uri: multiAppBackgroundPath }} style={styles.multiAppBackgroundPreview} resizeMode="cover" />
+          ) : null}
+          <TouchableOpacity style={[styles.ssPickButton, pickingMultiAppBackground && styles.ssPickButtonDisabled]} onPress={onPickMultiAppBackground} disabled={pickingMultiAppBackground}>
+            <Text style={styles.ssPickButtonText}>{pickingMultiAppBackground ? 'Opening image picker…' : 'Choose Background Image'}</Text>
+          </TouchableOpacity>
+          {multiAppBackgroundPath ? (
+            <TouchableOpacity style={styles.addRuleButton} onPress={onClearMultiAppBackground}>
+              <Text style={styles.addRuleButtonText}>Restore Built-in Background</Text>
+            </TouchableOpacity>
+          ) : null}
+        </SettingsSection>
+      )}
+
       {/* Screensaver - available in all display modes (keepScreenOn required for webview/media_player) */}
       {(displayMode === 'external_app' || keepScreenOn) && (
         <SettingsSection title="Screensaver" icon="weather-night">
@@ -1090,6 +1119,7 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontWeight: '600',
   },
+  multiAppBackgroundPreview: { width: '100%', height: 180, borderRadius: 10, marginVertical: Spacing.sm, backgroundColor: Colors.background },
   ssPickButton: {
     backgroundColor: Colors.primary,
     paddingVertical: Spacing.md,

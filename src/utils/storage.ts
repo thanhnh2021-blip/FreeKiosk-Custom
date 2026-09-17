@@ -77,6 +77,7 @@ export const KEYS = {
   RETURN_MODE: '@kiosk_return_mode', // 'tap_anywhere' | 'button'
   RETURN_BUTTON_POSITION: '@kiosk_return_button_position', // 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right'
   VOLUME_UP_5TAP_ENABLED: '@kiosk_volume_up_5tap_enabled',
+  MULTI_APP_BACKGROUND_PATH: '@kiosk_multiapp_background_path',
   // Blocking Overlays
   BLOCKING_OVERLAYS_ENABLED: '@kiosk_blocking_overlays_enabled',
   BLOCKING_OVERLAYS_REGIONS: '@kiosk_blocking_overlays_regions',
@@ -978,6 +979,27 @@ export const StorageService = {
     } catch (error) {
       console.error('Error getting auto relaunch app:', error);
       return true;
+    }
+  },
+
+  saveMultiAppBackgroundPath: async (value: string): Promise<void> => {
+    try {
+      if (value) {
+        await AsyncStorage.setItem(KEYS.MULTI_APP_BACKGROUND_PATH, value);
+      } else {
+        await AsyncStorage.removeItem(KEYS.MULTI_APP_BACKGROUND_PATH);
+      }
+    } catch (error) {
+      console.error('Error saving multi-app background path:', error);
+    }
+  },
+
+  getMultiAppBackgroundPath: async (): Promise<string> => {
+    try {
+      return (await AsyncStorage.getItem(KEYS.MULTI_APP_BACKGROUND_PATH)) || '';
+    } catch (error) {
+      console.error('Error getting multi-app background path:', error);
+      return '';
     }
   },
 

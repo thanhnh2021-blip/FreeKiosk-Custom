@@ -121,6 +121,8 @@ const SettingsScreenNew: React.FC<SettingsScreenProps> = ({ navigation }) => {
   const [isDeviceOwner, setIsDeviceOwner] = useState<boolean>(false);
   const [managedApps, setManagedApps] = useState<ManagedApp[]>([]);
   const [externalAppMode, setExternalAppMode] = useState<'single' | 'multi'>('single');
+  const [multiAppBackgroundPath, setMultiAppBackgroundPath] = useState<string>('');
+  const [pickingMultiAppBackground, setPickingMultiAppBackground] = useState<boolean>(false);
   const [statusBarEnabled, setStatusBarEnabled] = useState<boolean>(false);
   const [statusBarOnOverlay, setStatusBarOnOverlay] = useState<boolean>(true);
   const [statusBarOnReturn, setStatusBarOnReturn] = useState<boolean>(true);
@@ -494,6 +496,7 @@ const SettingsScreenNew: React.FC<SettingsScreenProps> = ({ navigation }) => {
     // External app settings
     const savedDisplayMode = await StorageService.getDisplayMode();
     const savedExternalAppPackage = await StorageService.getExternalAppPackage();
+    const savedMultiAppBackgroundPath = await StorageService.getMultiAppBackgroundPath();
     const savedAutoRelaunchApp = await StorageService.getAutoRelaunchApp();
     const savedOverlayButtonVisible = await StorageService.getOverlayButtonVisible();
     const savedPinMaxAttempts = await StorageService.getPinMaxAttempts();
@@ -564,6 +567,7 @@ const SettingsScreenNew: React.FC<SettingsScreenProps> = ({ navigation }) => {
     // External app sub-mode
     const savedExternalAppMode = await StorageService.getExternalAppMode();
     setExternalAppMode(savedExternalAppMode);
+    setMultiAppBackgroundPath(savedMultiAppBackgroundPath);
 
     setOverlayButtonVisible(savedOverlayButtonVisible);
     setPinMaxAttempts(savedPinMaxAttempts);
@@ -820,6 +824,35 @@ const SettingsScreenNew: React.FC<SettingsScreenProps> = ({ navigation }) => {
       }
     } finally {
       setPickingScreensaverMedia(false);
+    }
+  };
+
+  const handlePickMultiAppBackground = async () => {
+    try {
+      setPickingMultiAppBackground(true);
+      const file: any = await FilePickerModule.pickBackgroundImage();
+      if (!file?.path) return;
+      if (multiAppBackgroundPath && multiAppBackgroundPath !== file.path) {
+        try { await FilePickerModule.deleteMediaFile(multiAppBackgroundPath); } catch (_) {}
+      }
+      setMultiAppBackgroundPath(file.path);
+      await StorageService.saveMultiAppBackgroundPath(file.path);
+    } catch (error: any) {
+      if (error?.code !== 'PICKER_CANCELLED') Alert.alert('Error', `Failed to pick background image: ${error?.message || error}`);
+    } finally {
+      setPickingMultiAppBackground(false);
+    }
+  };
+
+  const handleClearMultiAppBackground = async () => {
+    try {
+      if (multiAppBackgroundPath) {
+        try { await FilePickerModule.deleteMediaFile(multiAppBackgroundPath); } catch (_) {}
+      }
+      setMultiAppBackgroundPath('');
+      await StorageService.saveMultiAppBackgroundPath('');
+    } catch (_) {
+      Alert.alert('Error', 'Failed to restore built-in background');
     }
   };
 
@@ -1437,6 +1470,7 @@ const SettingsScreenNew: React.FC<SettingsScreenProps> = ({ navigation }) => {
     await StorageService.saveDisplayMode(displayMode);
     await StorageService.saveExternalAppPackage(externalAppPackage);
     await StorageService.saveExternalAppMode(externalAppMode);
+    await StorageService.saveMultiAppBackgroundPath(multiAppBackgroundPath);
     await StorageService.saveAutoRelaunchApp(autoRelaunchApp);
     await StorageService.saveManagedApps(managedApps);
     await StorageService.saveOverlayButtonVisible(overlayButtonVisible);
@@ -1970,6 +2004,10 @@ const SettingsScreenNew: React.FC<SettingsScreenProps> = ({ navigation }) => {
         return (
           <DisplayTab
             displayMode={displayMode}
+            multiAppBackgroundPath={multiAppBackgroundPath}
+            onPickMultiAppBackground={handlePickMultiAppBackground}
+            onClearMultiAppBackground={handleClearMultiAppBackground}
+            pickingMultiAppBackground={pickingMultiAppBackground}
             brightnessManagementEnabled={brightnessManagementEnabled}
             onBrightnessManagementEnabledChange={handleBrightnessManagementToggle}
             defaultBrightness={defaultBrightness}

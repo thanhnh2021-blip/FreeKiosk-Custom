@@ -25,7 +25,9 @@ class FilePickerModule(reactContext: ReactApplicationContext) :
         private const val PICK_MEDIA_REQUEST = 9001
         private const val PICK_JSON_REQUEST = 9002
         private const val SAVE_JSON_REQUEST = 9003
+        private const val PICK_BACKGROUND_REQUEST = 9004
         private const val MEDIA_DIR = "media_player"
+        private const val BACKGROUND_DIR = "multiapp_background"
     }
 
     private var pickPromise: Promise? = null
@@ -82,6 +84,30 @@ class FilePickerModule(reactContext: ReactApplicationContext) :
      * Pick multiple media files at once.
      * Returns a WritableArray of WritableMaps.
      */
+    @ReactMethod
+    fun pickBackgroundImage(promise: Promise) {
+        val activity = reactApplicationContext.currentActivity
+        if (activity == null) {
+            promise.reject("NO_ACTIVITY", "No activity available")
+            return
+        }
+        if (pickPromise != null) {
+            promise.reject("PICKER_BUSY", "A file picker is already open")
+            return
+        }
+        pickPromise = promise
+        try {
+            val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+                addCategory(Intent.CATEGORY_OPENABLE)
+                type = "image/*"
+            }
+            activity.startActivityForResult(intent, PICK_BACKGROUND_REQUEST)
+        } catch (e: Exception) {
+            pickPromise = null
+            promise.reject("PICKER_ERROR", "Failed to open image picker: ${e.message}")
+        }
+    }
+
     @ReactMethod
     fun pickMultipleMedia(mediaType: String, promise: Promise) {
         val activity = reactApplicationContext.currentActivity
@@ -263,7 +289,7 @@ class FilePickerModule(reactContext: ReactApplicationContext) :
     // ==================== Activity Result Handling ====================
 
     override fun onActivityResult(activity: Activity, requestCode: Int, resultCode: Int, data: Intent?) {
-        if (requestCode != PICK_MEDIA_REQUEST && requestCode != PICK_JSON_REQUEST && requestCode != SAVE_JSON_REQUEST) return
+        if (requestCode != PICK_MEDIA_REQUEST && requestCode != PICK_JSON_REQUEST && requestCode != SAVE_JSON_REQUEST && requestCode != PICK_BACKGROUND_REQUEST) return
 
         val promise = pickPromise ?: return
         pickPromise = null
@@ -275,6 +301,21 @@ class FilePickerModule(reactContext: ReactApplicationContext) :
         }
 
         try {
+            if (requestCode == PICK_BACKGROUND_REQUEST) {
+                val uri = data.data
+                if (uri == null) {
+                    promise.reject("NO_URI", "No image URI received")
+                    return
+                }
+                val fileInfo = copyFileToDirectory(uri, BACKGROUND_DIR)
+                if (fileInfo != null) {
+                    promise.resolve(fileInfo)
+                } else {
+                    promise.reject("COPY_ERROR", "Failed to copy the selected background image")
+                }
+                return
+            }
+
             // Handle JSON file save - write content to the URI chosen by the user
             if (requestCode == SAVE_JSON_REQUEST) {
                 val uri = data.data
@@ -330,7 +371,7 @@ class FilePickerModule(reactContext: ReactApplicationContext) :
                 val results = Arguments.createArray()
                 for (idx in 0 until clipData.itemCount) {
                     val uri = clipData.getItemAt(idx).uri
-                    val fileInfo = copyFileToMediaDir(uri)
+                    val fileInfo = copyFileToDirectory(uri, MEDIA_DIR)
                     if (fileInfo != null) {
                         results.pushMap(fileInfo)
                     }
@@ -343,7 +384,7 @@ class FilePickerModule(reactContext: ReactApplicationContext) :
                     promise.reject("NO_URI", "No file URI received")
                     return
                 }
-                val fileInfo = copyFileToMediaDir(uri)
+                val fileInfo = copyFileToDirectory(uri, MEDIA_DIR)
                 if (fileInfo != null) {
                     // Wrap single result in array for consistency with pickMultipleMedia
                     // But for pickMedia (single), return just the map
@@ -364,13 +405,15 @@ class FilePickerModule(reactContext: ReactApplicationContext) :
 
     // ==================== Internal Helpers ====================
 
-    private fun getOrCreateMediaDir(): File {
-        val dir = File(reactApplicationContext.filesDir, MEDIA_DIR)
+    private fun getOrCreateDirectory(directoryName: String): File {
+        val dir = File(reactApplicationContext.filesDir, directoryName)
         if (!dir.exists()) {
             dir.mkdirs()
         }
         return dir
     }
+
+    private fun getOrCreateMediaDir(): File = getOrCreateDirectory(MEDIA_DIR)
 
     /**
      * Read a JSON file's content directly from a content:// URI.
@@ -416,7 +459,7 @@ class FilePickerModule(reactContext: ReactApplicationContext) :
      * Copy a content:// URI to the internal media directory.
      * Returns a WritableMap with file info, or null on failure.
      */
-    private fun copyFileToMediaDir(uri: Uri): WritableMap? {
+    private fun copyFileToDirectory(uri: Uri, directoryName: String): WritableMap? {
         val context = reactApplicationContext
         val contentResolver = context.contentResolver
 
