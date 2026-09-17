@@ -1,9 +1,10 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import { View, Text, TouchableOpacity, StyleSheet, Image, ImageBackground, ScrollView, FlatList, useWindowDimensions } from 'react-native';
+import { View, Text, TouchableOpacity, StyleSheet, Image, ImageBackground, ScrollView, FlatList, Pressable, useWindowDimensions } from 'react-native';
 import StatusBar from './StatusBar';
 import Icon from './Icon';
 import AppLauncherModule, { AppInfo } from '../utils/AppLauncherModule';
 import { ManagedApp } from '../types/managedApps';
+import KioskModule from '../utils/KioskModule';
 
 interface ExternalAppOverlayProps {
   /** Legacy single-app package (backward compat) */
@@ -80,6 +81,56 @@ const ExternalAppOverlay: React.FC<ExternalAppOverlayProps> = ({
   const firstTapXRef = useRef<number>(0);
   const firstTapYRef = useRef<number>(0);
   const TAP_PROXIMITY_RADIUS = 80;
+
+  // Home background double-tap -> native screen lock.
+  // The Pressable sits underneath the header/grid/buttons, so app-icon taps do
+  // not trigger the lock gesture.
+  const backgroundDoubleTapTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastBackgroundTapTimeRef = useRef<number>(0);
+  const DOUBLE_TAP_TIMEOUT_MS = 350;
+
+  const handleBackgroundPress = useCallback(() => {
+    const now = Date.now();
+    const elapsed = now - lastBackgroundTapTimeRef.current;
+
+    if (elapsed > 0 && elapsed <= DOUBLE_TAP_TIMEOUT_MS) {
+      lastBackgroundTapTimeRef.current = 0;
+
+      if (backgroundDoubleTapTimerRef.current) {
+        clearTimeout(backgroundDoubleTapTimerRef.current);
+        backgroundDoubleTapTimerRef.current = null;
+      }
+
+      KioskModule.turnScreenOff().catch(error => {
+        console.warn(
+          '[ExternalAppOverlay] Failed to lock screen from background double-tap:',
+          error,
+        );
+      });
+      return;
+    }
+
+    lastBackgroundTapTimeRef.current = now;
+
+    if (backgroundDoubleTapTimerRef.current) {
+      clearTimeout(backgroundDoubleTapTimerRef.current);
+    }
+
+    backgroundDoubleTapTimerRef.current = setTimeout(() => {
+      lastBackgroundTapTimeRef.current = 0;
+      backgroundDoubleTapTimerRef.current = null;
+    }, DOUBLE_TAP_TIMEOUT_MS);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (backgroundDoubleTapTimerRef.current) {
+        clearTimeout(backgroundDoubleTapTimerRef.current);
+        backgroundDoubleTapTimerRef.current = null;
+      }
+      lastBackgroundTapTimeRef.current = 0;
+    };
+  }, []);
 
   // tap_anywhere mode: N-tap with spatial proximity check (identical to WebView)
   const handleGridTouch = useCallback((event: any) => {
@@ -230,6 +281,12 @@ const ExternalAppOverlay: React.FC<ExternalAppOverlayProps> = ({
         onTouchStart={handleGridTouch}
       >
         <View style={styles.multiAppOverlay}>
+        <Pressable
+          style={StyleSheet.absoluteFillObject}
+          onPress={handleBackgroundPress}
+          accessibilityRole="button"
+          accessibilityLabel="Lock screen"
+        />
         {showStatusBar && (
           <StatusBar
             showBattery={showBattery}
@@ -249,6 +306,7 @@ const ExternalAppOverlay: React.FC<ExternalAppOverlayProps> = ({
           <Text style={styles.multiAppTitle}>FreeKiosk</Text>
         </View>
         <FlatList
+          pointerEvents="box-none"
           data={homeScreenApps}
           renderItem={renderAppIcon}
           keyExtractor={item => item.packageName}

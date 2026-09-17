@@ -21,3 +21,15 @@ This build is intended to be built once and then configured from FreeKiosk Setti
 ## Build
 
 The existing `.github/workflows/build-apk.yml` builds the release APK as the `FreeKiosk-custom-release` artifact.
+
+4. Lifecycle hardening for return-to-settings gestures.
+   - The upstream #203 OverlayService/MainActivity race fix is already present in this source:
+     the native external-app fast path does not emit `onAppReturned` before restarting the OverlayService.
+   - On every `MainActivity.onResume()`, transient 8-tap and Volume-Up x5 gesture state is reset.
+   - Persisted AsyncStorage settings and Device Owner state are not changed.
+
+5. Multi-App Home double-tap lock.
+   - Double-tap an empty Home background area to invoke `KioskModule.turnScreenOff()`.
+   - On this Device Owner tablet, the native method uses `DevicePolicyManager.lockNow()` for a real screen lock.
+   - The lock target is layered below the header, app tiles, FlatList children, and return button, so normal app clicks remain unchanged.
+   - Lenovo/ZUI double-tap-to-wake is untouched.

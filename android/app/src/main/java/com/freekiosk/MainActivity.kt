@@ -746,6 +746,11 @@ class MainActivity : ReactActivity() {
     super.onResume()
 
     readExternalAppConfig()
+
+    // Lifecycle hardening: discard any partial return-to-settings gesture sequence
+    // when the Activity comes back from Android Settings or another system surface.
+    // Persisted settings and Device Owner state are untouched.
+    resetKioskGestureState()
     
     // Re-register screen state receiver in case it was lost
     if (screenStateReceiver == null) {
@@ -2189,6 +2194,24 @@ class MainActivity : ReactActivity() {
     } catch (e: Exception) {
       android.util.Log.e("MainActivity", "Error registering screen state receiver: ${e.message}")
     }
+  }
+
+  /**
+   * Reset only transient gesture state on an Activity lifecycle return.
+   *
+   * The configured tap count/timeout remain persisted in AsyncStorage. This only
+   * clears in-memory counters so a new 8-tap / Volume-Up x5 sequence starts cleanly
+   * after Android Settings or another system surface has covered the kiosk.
+   */
+  private fun resetKioskGestureState() {
+    tapSettingsCount = 0
+    tapSettingsFirstTapTime = 0L
+    tapSettingsFirstX = 0f
+    tapSettingsFirstY = 0f
+    tapSettingsCfgReadAt = 0L
+
+    VolumeChangeReceiver.resetGestureState()
+    DebugLog.d("MainActivity", "Kiosk return gesture state reset onResume")
   }
 
   /**
