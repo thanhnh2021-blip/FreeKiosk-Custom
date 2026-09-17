@@ -400,7 +400,7 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(0, 0, 0, 0.12)',
   },
 
-  scrollContent:
+  scrollContent: {
     flexGrow: 1,
     justifyContent: 'center',
     paddingVertical: 24,
