@@ -31,6 +31,19 @@ class VolumeChangeReceiver : BroadcastReceiver() {
         private val volumeChangeTapTimeout = 2000L // 2 seconds timeout
         private val volumeChangeMinInterval = 250L // Minimum ms between counted taps (filters hold/auto-repeat)
         private var lastVolume = -1
+
+        /**
+         * Reset the transient gesture state after a lifecycle transition.
+         *
+         * Android can leave the receiver registered while FreeKiosk is temporarily
+         * covered by Android Settings. A fresh return-to-settings gesture must not
+         * inherit a partial sequence from before the transition.
+         */
+        fun resetGestureState() {
+            volumeChangeTapCount = 0
+            volumeChangeLastTapTime = 0L
+            lastVolume = -1
+        }
     }
     
     override fun onReceive(context: Context, intent: Intent) {
