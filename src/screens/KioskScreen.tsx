@@ -238,6 +238,10 @@ const KioskScreen: React.FC<KioskScreenProps> = ({ navigation }) => {
   const [mediaPlayerTransitionDuration, setMediaPlayerTransitionDuration] = useState<number>(500);
   const [mediaPlayerMute, setMediaPlayerMute] = useState<boolean>(false);
 
+  // v52 - tracks sleep caused specifically by the inactivity auto screen-off.
+  // This lets the AppState wake path distinguish it from other screensaver states.
+  const screenOffByInactivityRef = useRef(false);
+  const resetTimerRef = useRef<() => void>(() => {});
   // AppState listener - detects when the app returns to the foreground
   useEffect(() => {
     const subscription = AppState.addEventListener('change', async nextAppState => {
@@ -257,6 +261,34 @@ const KioskScreen: React.FC<KioskScreenProps> = ({ navigation }) => {
         }
 
         // Screensaver brought FreeKiosk to foreground — don't relaunch the external app yet
+        // v52 - recover from a real display wake after inactivity auto screen-off.
+        // AppState + native screen-state verification is the wake path.
+        if (screenOffByInactivityRef.current) {
+          try {
+            const isScreenOn = await KioskModule.isScreenOn();
+
+            if (isScreenOn) {
+              screenOffByInactivityRef.current = false;
+
+              console.log(
+                '[KioskScreen] Screen woke after inactivity sleep - clearing sleep latch'
+              );
+
+              setIsScreensaverActive(false);
+              resetTimerRef.current();
+
+              // Do not enter external-app relaunch logic for this wake.
+              return;
+            }
+          } catch (error) {
+            console.error(
+              '[KioskScreen] Failed to verify screen state after inactivity wake:',
+              error
+            );
+          }
+        }
+
+        // Screensaver brought FreeKiosk to foreground - don't relaunch the external app yet
         if (isScreensaverActiveRef.current) {
           console.log('[KioskScreen] AppState: skipping relaunch (screensaver active)');
           return;
@@ -2158,6 +2190,8 @@ const KioskScreen: React.FC<KioskScreenProps> = ({ navigation }) => {
     if (!(screensaverEnabled && inactivityEnabled)) return;
 
     Keyboard.dismiss();
+    // v52 - mark that the physical screen-off was caused by inactivity.
+    screenOffByInactivityRef.current = true;
     setIsScreensaverActive(true);
 
     try {
@@ -2182,6 +2216,8 @@ const KioskScreen: React.FC<KioskScreenProps> = ({ navigation }) => {
       }, inactivityDelay);
     }
   };
+
+  resetTimerRef.current = resetTimer;
 
   const clearTimer = useCallback(() => {
     if (timerRef.current) {
