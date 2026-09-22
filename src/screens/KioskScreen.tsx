@@ -1128,7 +1128,15 @@ const KioskScreen: React.FC<KioskScreenProps> = ({ navigation }) => {
   useFocusEffect(
     useCallback(() => {
       KioskModule.setKioskScreenActive?.(true).catch(() => {});
+
+      const subscription = AppState.addEventListener('change', (state) => {
+        if (state === 'active') {
+          KioskModule.setKioskScreenActive?.(true).catch(() => {});
+        }
+      });
+
       return () => {
+        subscription.remove();
         KioskModule.setKioskScreenActive?.(false).catch(() => {});
       };
     }, [])
