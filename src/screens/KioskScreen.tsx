@@ -2147,30 +2147,27 @@ const KioskScreen: React.FC<KioskScreenProps> = ({ navigation }) => {
   // screensaver. Extracted so it can be triggered by either the JS setTimeout (WebView/
   // media modes) or the native inactivity event (External App mode, where RN freezes JS
   // timers while FreeKiosk is backgrounded behind the external app).
-  const triggerScreensaverTimeout = useCallback(() => {
+  // v52 - Inactivity expiry turns the physical display OFF instead of showing
+  // a React Native screensaver overlay.
+  //
+  // isScreensaverActive is used as an internal sleep latch. The existing
+  // onScreenStateChanged handler clears this latch when Android wakes the screen
+  // and restarts the inactivity timer.
+  const triggerScreensaverTimeout = useCallback(async () => {
     if (isScheduledSleep) return;
     if (!(screensaverEnabled && inactivityEnabled)) return;
-    // #190 — No motion pre-check in External App mode: FreeKiosk is backgrounded there,
-    // so the 10s pre-check setTimeout below is frozen by RN (the exact timer freeze the
-    // native countdown works around) and the screensaver never activated. The camera
-    // can't capture from the background anyway, so the pre-check could never see motion.
-    // Activate directly; wake-on-motion still works once the screensaver has brought
-    // FreeKiosk back to the foreground.
-    if (motionEnabled && displayMode !== 'external_app') {
-      console.log('[KioskScreen] Inactivity expired — starting motion pre-check');
-      setIsPreCheckingMotion(true);
-      // Pre-check window; if no motion is detected within it, activate the screensaver
-      preCheckTimerRef.current = setTimeout(() => {
-        console.log(`[KioskScreen] No motion detected after ${MOTION_PRE_CHECK_DELAY_MS}ms — activating screensaver`);
-        Keyboard.dismiss();
-        setIsScreensaverActive(true);
-        setIsPreCheckingMotion(false);
-      }, MOTION_PRE_CHECK_DELAY_MS);
-    } else {
-      Keyboard.dismiss();
-      setIsScreensaverActive(true);
+
+    Keyboard.dismiss();
+    setIsScreensaverActive(true);
+
+    try {
+      console.log('[KioskScreen] Inactivity expired - turning screen OFF');
+      await KioskModule.turnScreenOff();
+    } catch (error) {
+      console.error('[KioskScreen] Failed to turn screen OFF after inactivity:', error);
+      setIsScreensaverActive(false);
     }
-  }, [isScheduledSleep, screensaverEnabled, inactivityEnabled, motionEnabled, displayMode]);
+  }, [isScheduledSleep, screensaverEnabled, inactivityEnabled]);
 
   const resetTimer = () => {
     clearTimer();
@@ -2219,7 +2216,7 @@ const KioskScreen: React.FC<KioskScreenProps> = ({ navigation }) => {
     const emitter = new NativeEventEmitter(NativeModules.DeviceEventManagerModule);
     const sub = emitter.addListener('inactivityExpiredNative', () => {
       if (displayMode !== 'external_app') return;
-      console.log('[KioskScreen] Native inactivity event received — triggering screensaver');
+      console.log('[KioskScreen] Native inactivity event received - turning screen OFF');
       triggerScreensaverTimeout();
     });
     return () => sub.remove();
