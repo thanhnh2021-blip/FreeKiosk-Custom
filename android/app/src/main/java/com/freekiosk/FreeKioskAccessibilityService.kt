@@ -877,12 +877,11 @@ class FreeKioskAccessibilityService : AccessibilityService() {
         }
 
         // Targeted navigation fix:
-        // Only change blocker state for the actual app foreground.
-        // Transient SystemUI/IME events must NOT remove the blocker while
-        // an external app remains active.
-        if (pkg == packageName) {
-            updateNavigationBlocker(false)
-        } else if (!isTransientSystemPackage(pkg) && isLockTaskWhitelistedPackage(pkg)) {
+        // Enable the blocker when a Lock Task whitelisted external app
+        // becomes the foreground window. Do NOT remove the blocker on
+        // a transient FreeKiosk/SystemUI window event; the blocker is
+        // removed only when the accessibility service is destroyed.
+        if (!isTransientSystemPackage(pkg) && isLockTaskWhitelistedPackage(pkg)) {
             updateNavigationBlocker(true)
         }
     }
