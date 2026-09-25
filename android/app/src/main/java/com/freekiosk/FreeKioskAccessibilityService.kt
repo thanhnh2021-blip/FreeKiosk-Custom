@@ -18,10 +18,10 @@ import android.view.accessibility.AccessibilityNodeInfo
 
 /**
  * FreeKiosk Accessibility Service
- * 
+ *
  * Enables key/text injection into ANY app (including external apps).
  * Uses proper AccessibilityService APIs — NOT shell commands.
- * 
+ *
  * Injection strategy (in priority order):
  * 1. performGlobalAction() — for Back, Home, Recents, PlayPause (all API levels)
  * 2. InputMethod.sendKeyEvent() / commitText() — API 33+ (Android 13+)
@@ -32,36 +32,203 @@ import android.view.accessibility.AccessibilityNodeInfo
  *    Converts keyCodes to characters via KeyCharacterMap, appends to focused field.
  *    Also handles Backspace (remove last char) and Shift+letter (uppercase).
  * 5. "input keyevent" shell command — last resort (requires root/shell, usually fails)
- * 
+ *
  * Compatibility:
  * - API 33+ (Android 13+): Full support — all keys, combos, text, DPAD navigation
  * - API 31-32 (Android 12): Global actions (incl. PlayPause) + DPAD navigation via
  *   accessibility tree + printable chars/text via ACTION_SET_TEXT
  * - API 21-30 (Android 5-11): Global actions + DPAD navigation + printable chars/text.
  *   PlayPause requires shell privileges. Non-printable keys and Ctrl/Alt combos limited.
- * 
+ *
  * The user must enable this service in:
  *   Settings > Accessibility > FreeKiosk
  * In Device Owner mode, it can be enabled programmatically.
  */
 class FreeKioskAccessibilityService : AccessibilityService() {
 
+    // Targeted Lenovo Tab One fix:
+    // Keep Notifications enabled in Lock Task, but visually block only
+    // the Android Home (○) and Recents (☰) buttons when an external app
+    // is actually in the foreground. Uses Accessibility Overlay so the
+    // blocker can sit above NavigationBar0 without changing Device Owner
+    // or Lock Task features.
+    private val navigationBlockerViews = mutableMapOf<String, View>()
+    private var navigationBlockerActive = false
+
+    private fun isTransientSystemPackage(pkg: String): Boolean {
+        return pkg == "com.android.systemui" ||
+            pkg == "android" ||
+            pkg == "com.google.android.inputmethod.latin" ||
+            pkg == "com.android.inputmethod.latin" ||
+            pkg == "com.google.android.permissioncontroller" ||
+            pkg == "com.android.permissioncontroller"
+    }
+
+    /**
+     * Navigation blocker is allowed only for packages explicitly permitted
+     * by Device Owner Lock Task policy. This keeps SystemUI, IME, permission
+     * dialogs, and unrelated packages outside the blocker path.
+     */
+    private fun isLockTaskWhitelistedPackage(pkg: String): Boolean {
+        if (pkg == packageName) return false
+
+        return try {
+            val dpm = getSystemService(
+                android.content.Context.DEVICE_POLICY_SERVICE
+            ) as android.app.admin.DevicePolicyManager
+
+            dpm.isLockTaskPermitted(pkg)
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not check Lock Task package '$pkg': ${e.message}")
+            false
+        }
+    }
+
+    private fun removeNavigationBlocker() {
+        if (navigationBlockerViews.isEmpty()) {
+            navigationBlockerActive = false
+            return
+        }
+
+        try {
+            val windowManager = getSystemService(
+                android.content.Context.WINDOW_SERVICE
+            ) as android.view.WindowManager
+
+            navigationBlockerViews.values.toList().forEach { view ->
+                try {
+                    windowManager.removeView(view)
+                } catch (_: Exception) {
+                }
+            }
+        } catch (_: Exception) {
+        }
+
+        navigationBlockerViews.clear()
+        navigationBlockerActive = false
+        Log.i(TAG, "Navigation blocker REMOVED")
+    }
+
+    private fun updateNavigationBlocker(active: Boolean) {
+        if (!active) {
+            removeNavigationBlocker()
+            return
+        }
+
+        if (navigationBlockerActive && navigationBlockerViews.size == 2) {
+            return
+        }
+
+        removeNavigationBlocker()
+
+        try {
+            val windowManager = getSystemService(
+                android.content.Context.WINDOW_SERVICE
+            ) as android.view.WindowManager
+
+            val displaySize = android.graphics.Point()
+            @Suppress("DEPRECATION")
+            windowManager.defaultDisplay.getRealSize(displaySize)
+
+            val width = displaySize.x
+            val height = displaySize.y
+
+            val navBarResId = resources.getIdentifier(
+                "navigation_bar_height",
+                "dimen",
+                "android"
+            )
+
+            val navBarHeight = if (navBarResId != 0) {
+                resources.getDimensionPixelSize(navBarResId)
+            } else {
+                60
+            }
+
+            // On Lenovo TB305XU (1340x800 logical display), the 3-button
+            // navigation centers are approximately:
+            // Back = 1/6, Home = 1/2, Recents = 5/6.
+            // Block only Home + Recents so the FreeKiosk Return Button
+            // at the corners remains usable.
+            val blockWidth = (navBarHeight * 2).coerceAtLeast(96)
+            val bottom = navBarHeight.coerceAtMost(height)
+            val lefts = listOf(
+                (width / 2) - (blockWidth / 2),
+                ((width * 5) / 6) - (blockWidth / 2)
+            )
+
+            lefts.forEachIndexed { index, left ->
+                val key = if (index == 0) "home" else "recents"
+
+                val blockerView = View(this).apply {
+                    // Lenovo/ZUI navigation bar is black in the tested
+                    // three-button configuration. The opaque surface hides
+                    // the underlying ○ / ☰ glyphs rather than only blocking
+                    // their touch targets.
+                    setBackgroundColor(android.graphics.Color.BLACK)
+                    isClickable = true
+                    isFocusable = false
+                    contentDescription = "FreeKiosk navigation blocker: $key"
+                    setOnTouchListener { _, _ -> true }
+                }
+
+                val params = android.view.WindowManager.LayoutParams(
+                    blockWidth,
+                    bottom,
+                    android.view.WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+                    android.view.WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                        android.view.WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
+                        android.view.WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+                    android.graphics.PixelFormat.OPAQUE
+                ).apply {
+                    gravity = android.view.Gravity.BOTTOM or android.view.Gravity.START
+                    x = left.coerceIn(0, (width - blockWidth).coerceAtLeast(0))
+                    y = 0
+
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                        setFitInsetsTypes(0)
+                    }
+
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                        layoutInDisplayCutoutMode =
+                            android.view.WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
+                    }
+
+                    title = "FreeKioskNavigationBlock-$key"
+                }
+
+                windowManager.addView(blockerView, params)
+                navigationBlockerViews[key] = blockerView
+            }
+
+            navigationBlockerActive = navigationBlockerViews.size == 2
+            Log.i(
+                TAG,
+                "Navigation blocker ACTIVE: ${width}x${height}, navBar=$navBarHeight, package blocker"
+            )
+        } catch (e: Exception) {
+            navigationBlockerViews.clear()
+            navigationBlockerActive = false
+            Log.e(TAG, "Navigation blocker FAILED: ${e.message}")
+        }
+    }
+
     companion object {
         private const val TAG = "FreeKioskA11y"
-        
+
         @Volatile
         var instance: FreeKioskAccessibilityService? = null
             private set
-        
+
         fun isRunning(): Boolean = instance != null
-        
+
         /**
          * Send a single key press.
          * Strategy: globalAction → InputMethod (API 33+) → a11y navigation → ACTION_SET_TEXT → input keyevent
          */
         fun sendKey(keyCode: Int): Boolean {
             val service = instance ?: return false
-            
+
             // 1. Global actions (Back, Home, Recents) — always works, all API levels
             val globalAction = mapToGlobalAction(keyCode)
             if (globalAction != null) {
@@ -69,7 +236,7 @@ class FreeKioskAccessibilityService : AccessibilityService() {
                 Log.d(TAG, "Global action: keyCode=$keyCode, action=$globalAction, ok=$ok")
                 return ok
             }
-            
+
             // 2. API 33+: InputMethod.sendKeyEvent (works in focused input fields across apps)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 try {
@@ -85,12 +252,12 @@ class FreeKioskAccessibilityService : AccessibilityService() {
                     Log.w(TAG, "InputMethod unavailable: ${e.message}")
                 }
             }
-            
+
             // 3. Accessibility node actions (DPAD select, navigation, scroll — all API levels)
             if (performAccessibilityNavigation(service, keyCode)) {
                 return true
             }
-            
+
             // 4. Backspace: remove last char via ACTION_SET_TEXT (all API levels)
             if (keyCode == KeyEvent.KEYCODE_DEL) {
                 if (deleteLastCharViaSetText(service)) {
@@ -98,7 +265,7 @@ class FreeKioskAccessibilityService : AccessibilityService() {
                     return true
                 }
             }
-            
+
             // 5. Printable char: convert keyCode → char, append via ACTION_SET_TEXT (all API levels)
             val char = keyCodeToChar(keyCode, 0)
             if (char != null) {
@@ -107,18 +274,18 @@ class FreeKioskAccessibilityService : AccessibilityService() {
                     return true
                 }
             }
-            
+
             // 6. Last resort: input keyevent shell command (requires root/shell, usually fails)
             return execInputCommand("keyevent", keyCode.toString(), "Key fallback: keyCode=$keyCode")
         }
-        
+
         /**
          * Send a key press with modifier meta state (e.g., Ctrl+C, Alt+F4).
          * Strategy: InputMethod (API 33+) → ACTION_SET_TEXT for Shift+char → input keyevent
          */
         fun sendKeyWithMeta(keyCode: Int, metaState: Int): Boolean {
             val service = instance ?: return false
-            
+
             // 1. API 33+: InputMethod.sendKeyEvent with meta state
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 try {
@@ -134,7 +301,7 @@ class FreeKioskAccessibilityService : AccessibilityService() {
                     Log.w(TAG, "InputMethod unavailable for combo: ${e.message}")
                 }
             }
-            
+
             // 2. Shift + printable char: get shifted character (e.g. Shift+A → 'A') via ACTION_SET_TEXT
             //    Only for Shift-only combos (no Ctrl, no Alt) since those are system shortcuts.
             val isShiftOnly = (metaState and KeyEvent.META_SHIFT_ON) != 0
@@ -149,18 +316,18 @@ class FreeKioskAccessibilityService : AccessibilityService() {
                     }
                 }
             }
-            
+
             // 3. Last resort: input keyevent (meta state is lost, limited)
             return execInputCommand("keyevent", keyCode.toString(), "Combo fallback: keyCode=$keyCode (meta=$metaState lost)")
         }
-        
+
         /**
          * Type text into the focused input field.
          * Strategy: InputMethod.commitText (API 33+) → ACTION_SET_TEXT on focused node (all APIs)
          */
         fun sendText(text: String): Boolean {
             val service = instance ?: return false
-            
+
             // 1. API 33+: InputMethod.commitText (best — acts like real keyboard typing)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 try {
@@ -174,13 +341,13 @@ class FreeKioskAccessibilityService : AccessibilityService() {
                     Log.w(TAG, "InputMethod unavailable for text: ${e.message}")
                 }
             }
-            
+
             // 2. ACTION_SET_TEXT on focused input node (all API levels)
             if (injectTextViaSetText(service, text)) {
                 Log.d(TAG, "Text via ACTION_SET_TEXT: '${text.take(50)}'")
                 return true
             }
-            
+
             Log.w(TAG, "All text injection methods failed")
             return false
         }
@@ -211,9 +378,9 @@ class FreeKioskAccessibilityService : AccessibilityService() {
                 else -> null
             }
         }
-        
+
         // ======= Accessibility Navigation (DPAD support, all API levels) =======
-        
+
         /**
          * Handle DPAD keys and select via accessibility node actions.
          * Enables UI navigation on devices where InputMethod is unavailable
@@ -232,7 +399,7 @@ class FreeKioskAccessibilityService : AccessibilityService() {
                 else -> false
             }
         }
-        
+
         /**
          * Click the currently focused UI element.
          * Returns false for editable fields (text inputs) so Enter/Select
@@ -243,22 +410,22 @@ class FreeKioskAccessibilityService : AccessibilityService() {
             try {
                 val focused = root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
                     ?: root.findFocus(AccessibilityNodeInfo.FOCUS_ACCESSIBILITY)
-                
+
                 if (focused == null) {
                     // No focused element — tap center of screen as fallback (API 24+)
                     return tapCenterGesture(service)
                 }
-                
+
                 try {
                     // Don't click editable text fields — let key be handled as text input
                     if (focused.isEditable) return false
-                    
+
                     // Walk up to find nearest clickable ancestor (or self)
                     var target = focused
                     while (!target.isClickable) {
                         target = target.parent ?: return false
                     }
-                    
+
                     val ok = target.performAction(AccessibilityNodeInfo.ACTION_CLICK)
                     Log.d(TAG, "Select via a11y click: ok=$ok, class=${target.className}")
                     return ok
@@ -269,7 +436,7 @@ class FreeKioskAccessibilityService : AccessibilityService() {
                 root.recycle()
             }
         }
-        
+
         /**
          * Navigate focus to the nearest interactive element in the given direction,
          * or scroll if no candidate is found.
@@ -286,15 +453,15 @@ class FreeKioskAccessibilityService : AccessibilityService() {
                         val focusedRect = Rect().also { focused.getBoundsInScreen(it) }
                         val candidates = mutableListOf<Pair<AccessibilityNodeInfo, Rect>>()
                         collectInteractiveNodes(root, candidates)
-                        
+
                         var bestNode: AccessibilityNodeInfo? = null
                         var bestScore = Int.MAX_VALUE
-                        
+
                         for ((node, rect) in candidates) {
                             // Skip self (compare by bounds center)
                             if (rect.centerX() == focusedRect.centerX()
                                 && rect.centerY() == focusedRect.centerY()) continue
-                            
+
                             val inDir = when (direction) {
                                 View.FOCUS_UP -> rect.centerY() < focusedRect.centerY()
                                 View.FOCUS_DOWN -> rect.centerY() > focusedRect.centerY()
@@ -302,7 +469,7 @@ class FreeKioskAccessibilityService : AccessibilityService() {
                                 View.FOCUS_RIGHT -> rect.centerX() > focusedRect.centerX()
                                 else -> false
                             }
-                            
+
                             if (inDir) {
                                 val dx = rect.centerX() - focusedRect.centerX()
                                 val dy = rect.centerY() - focusedRect.centerY()
@@ -316,7 +483,7 @@ class FreeKioskAccessibilityService : AccessibilityService() {
                                 }
                             }
                         }
-                        
+
                         if (bestNode != null) {
                             // Try input focus first, then accessibility focus
                             var ok = bestNode.performAction(AccessibilityNodeInfo.ACTION_FOCUS)
@@ -330,17 +497,17 @@ class FreeKioskAccessibilityService : AccessibilityService() {
                         focused.recycle()
                     }
                 }
-                
+
                 // 2. Fallback: scroll the nearest scrollable container
                 if (scrollInDirection(root, direction)) return true
-                
+
                 // 3. Last resort: dispatchGesture swipe (API 24+)
                 return swipeGesture(service, direction)
             } finally {
                 root.recycle()
             }
         }
-        
+
         /**
          * Recursively collect all visible, focusable or clickable nodes with their screen bounds.
          */
@@ -365,7 +532,7 @@ class FreeKioskAccessibilityService : AccessibilityService() {
                 // Node may become stale during traversal — skip silently
             }
         }
-        
+
         /**
          * Scroll the nearest scrollable container in the given direction.
          * Uses BFS to find the first scrollable node in the accessibility tree.
@@ -391,7 +558,7 @@ class FreeKioskAccessibilityService : AccessibilityService() {
             }
             return false
         }
-        
+
         /**
          * Simulate a swipe gesture in the given direction.
          * Uses dispatchGesture (API 24+) to scroll/navigate when no focusable nodes exist.
@@ -407,7 +574,7 @@ class FreeKioskAccessibilityService : AccessibilityService() {
                 val cx = w / 2f
                 val cy = h / 2f
                 val dist = h / 4f
-                
+
                 val path = Path()
                 when (direction) {
                     View.FOCUS_UP -> { path.moveTo(cx, cy); path.lineTo(cx, cy + dist) }
@@ -416,7 +583,7 @@ class FreeKioskAccessibilityService : AccessibilityService() {
                     View.FOCUS_RIGHT -> { path.moveTo(cx, cy); path.lineTo(cx - dist, cy) }
                     else -> return false
                 }
-                
+
                 val gesture = GestureDescription.Builder()
                     .addStroke(GestureDescription.StrokeDescription(path, 0, 250))
                     .build()
@@ -428,7 +595,7 @@ class FreeKioskAccessibilityService : AccessibilityService() {
                 return false
             }
         }
-        
+
         /**
          * Simulate a tap at the center of the screen.
          * Used as fallback when no focused/clickable element is found for Select.
@@ -439,10 +606,10 @@ class FreeKioskAccessibilityService : AccessibilityService() {
                 val dm = service.resources.displayMetrics
                 val cx = dm.widthPixels / 2f
                 val cy = dm.heightPixels / 2f
-                
+
                 val path = Path()
                 path.moveTo(cx, cy)
-                
+
                 val gesture = GestureDescription.Builder()
                     .addStroke(GestureDescription.StrokeDescription(path, 0, 50))
                     .build()
@@ -454,9 +621,9 @@ class FreeKioskAccessibilityService : AccessibilityService() {
                 return false
             }
         }
-        
+
         // ======= Text Injection Helpers =======
-        
+
         /**
          * Convert a keyCode (with optional metaState) to its printable character.
          * Uses the Android virtual keyboard character map.
@@ -472,7 +639,7 @@ class FreeKioskAccessibilityService : AccessibilityService() {
                 null
             }
         }
-        
+
         /**
          * Inject text into the currently focused input field via ACTION_SET_TEXT.
          * Appends the text to any existing content in the field.
@@ -503,7 +670,7 @@ class FreeKioskAccessibilityService : AccessibilityService() {
             }
             return false
         }
-        
+
         /**
          * Simulate Backspace by removing the last character from the focused input field.
          * Works on all API levels via ACTION_SET_TEXT.
@@ -534,7 +701,7 @@ class FreeKioskAccessibilityService : AccessibilityService() {
             }
             return false
         }
-        
+
         /**
          * Last resort: exec "input" shell command. This requires elevated privileges
          * and will silently fail on most non-rooted devices.
@@ -674,7 +841,7 @@ class FreeKioskAccessibilityService : AccessibilityService() {
     override fun onServiceConnected() {
         super.onServiceConnected()
         instance = this
-        
+
         // On API 33+, ensure InputMethod editor flag is set for text/key injection
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             try {
@@ -686,7 +853,7 @@ class FreeKioskAccessibilityService : AccessibilityService() {
                 Log.w(TAG, "Could not set InputMethod editor flag: ${e.message}")
             }
         }
-        
+
         Log.i(TAG, "FreeKiosk Accessibility Service connected (API ${Build.VERSION.SDK_INT})")
     }
 
@@ -708,6 +875,16 @@ class FreeKioskAccessibilityService : AccessibilityService() {
         } catch (e: Exception) {
             Log.w(TAG, "Failed to update foreground package for blocking overlays: ${e.message}")
         }
+
+        // Targeted navigation fix:
+        // Only change blocker state for the actual app foreground.
+        // Transient SystemUI/IME events must NOT remove the blocker while
+        // an external app remains active.
+        if (pkg == packageName) {
+            updateNavigationBlocker(false)
+        } else if (!isTransientSystemPackage(pkg) && isLockTaskWhitelistedPackage(pkg)) {
+            updateNavigationBlocker(true)
+        }
     }
 
     override fun onInterrupt() {
@@ -715,6 +892,7 @@ class FreeKioskAccessibilityService : AccessibilityService() {
     }
 
     override fun onDestroy() {
+        removeNavigationBlocker()
         super.onDestroy()
         instance = null
         Log.i(TAG, "FreeKiosk Accessibility Service disconnected")
