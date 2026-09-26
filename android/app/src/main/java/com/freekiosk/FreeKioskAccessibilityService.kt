@@ -165,7 +165,7 @@ class FreeKioskAccessibilityService : AccessibilityService() {
                     // three-button configuration. The opaque surface hides
                     // the underlying ○ / ☰ glyphs rather than only blocking
                     // their touch targets.
-                    setBackgroundColor(android.graphics.Color.BLACK)
+                    setBackgroundColor(android.graphics.Color.TRANSPARENT)
                     isClickable = true
                     isFocusable = false
                     contentDescription = "FreeKiosk navigation blocker: $key"
@@ -179,7 +179,7 @@ class FreeKioskAccessibilityService : AccessibilityService() {
                     android.view.WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
                         android.view.WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
                         android.view.WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
-                    android.graphics.PixelFormat.OPAQUE
+                    android.graphics.PixelFormat.TRANSLUCENT
                 ).apply {
                     gravity = android.view.Gravity.BOTTOM or android.view.Gravity.START
                     x = left.coerceIn(0, (width - blockWidth).coerceAtLeast(0))
@@ -876,12 +876,13 @@ class FreeKioskAccessibilityService : AccessibilityService() {
             Log.w(TAG, "Failed to update foreground package for blocking overlays: ${e.message}")
         }
 
-        // Targeted navigation fix:
-        // Enable the blocker when a Lock Task whitelisted external app
-        // becomes the foreground window. Do NOT remove the blocker on
-        // a transient FreeKiosk/SystemUI window event; the blocker is
-        // removed only when the accessibility service is destroyed.
-        if (!isTransientSystemPackage(pkg) && isLockTaskWhitelistedPackage(pkg)) {
+        // Navigation blocker lifecycle:
+        // - External Lock Task app -> blocker ON
+        // - Return to FreeKiosk -> blocker OFF
+        // - Transient SystemUI/IME events -> keep current state
+        if (pkg == packageName) {
+            updateNavigationBlocker(false)
+        } else if (!isTransientSystemPackage(pkg) && isLockTaskWhitelistedPackage(pkg)) {
             updateNavigationBlocker(true)
         }
     }
