@@ -880,9 +880,34 @@ class FreeKioskAccessibilityService : AccessibilityService() {
         // - External Lock Task app -> blocker ON
         // - Return to FreeKiosk -> blocker OFF
         // - Transient SystemUI/IME events -> keep current state
+        Log.i(
+            TAG,
+            "A11y EVENT: type=${event.eventType}, pkg=$pkg, " +
+                "active=$navigationBlockerActive, views=${navigationBlockerViews.size}"
+        )
+
         if (pkg == packageName) {
+            Log.i(TAG, "A11y EVENT -> FreeKiosk package detected, removing navigation blocker")
             updateNavigationBlocker(false)
         } else if (!isTransientSystemPackage(pkg) && isLockTaskWhitelistedPackage(pkg)) {
+            Log.i(TAG, "A11y EVENT -> whitelisted external package '$pkg', enabling navigation blocker")
+            updateNavigationBlocker(true)
+        }
+    }
+
+    /**
+     * Lenovo/ZUI can tear down Accessibility Overlay windows during a display
+     * configuration change (for example when USB/charging state changes).
+     * The foreground app does not necessarily emit another WINDOW_STATE_CHANGED
+     * event, so the old blocker state can remain marked active while its actual
+     * windows have been removed. Recreate the blocker whenever configuration
+     * changes, but only if it was active before the change.
+     */
+    override fun onConfigurationChanged(newConfig: android.content.res.Configuration) {
+        super.onConfigurationChanged(newConfig)
+        if (navigationBlockerActive) {
+            Log.i(TAG, "Configuration changed -> reapplying navigation blocker")
+            navigationBlockerActive = false
             updateNavigationBlocker(true)
         }
     }
