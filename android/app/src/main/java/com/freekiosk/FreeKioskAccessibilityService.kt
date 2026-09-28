@@ -47,27 +47,68 @@ import android.view.accessibility.AccessibilityNodeInfo
 class FreeKioskAccessibilityService : AccessibilityService() {
 
     // Targeted Lenovo Tab One fix:
-    // Keep Notifications enabled in Lock Task, but visually block only
-    // the Android Home (○) and Recents (☰) buttons when an external app
-    // is actually in the foreground. Uses Accessibility Overlay so the
-    // blocker can sit above NavigationBar0 without changing Device Owner
-    // or Lock Task features.
-    private val navigationBlockerViews = mutableMapOf<String, View>()
-    private var navigationBlockerActive = false
+    // Use Lenovo's built-in CSDK system service instead of an Accessibility
+    // Overlay. The firmware implementation of hideHomeSoftKey(true) adds
+    // DISABLE_HOME (0x00200000) and hideMenuSoftKey(true) adds
+    // DISABLE_RECENT (0x01000000), then calls StatusBarManager.disable()
+    // from system_server after clearing the caller identity. This is the
+    // same SystemUI mechanism as `cmd statusbar send-disable-flag home recents`.
+    // It leaves the existing Lock Task token and Notifications untouched.
+    private val csdkLock = Any()
+    private var csdkManager: Any? = null
+    private var csdkHideHomeMethod: java.lang.reflect.Method? = null
+    private var csdkHideMenuMethod: java.lang.reflect.Method? = null
 
-    private fun isTransientSystemPackage(pkg: String): Boolean {
-        return pkg == "com.android.systemui" ||
-            pkg == "android" ||
-            pkg == "com.google.android.inputmethod.latin" ||
-            pkg == "com.android.inputmethod.latin" ||
-            pkg == "com.google.android.permissioncontroller" ||
-            pkg == "com.android.permissioncontroller"
+    /**
+     * Apply/remove Home + Recents disable flags through Lenovo CSDK.
+     *
+     * The vendor framework exposes android.app.csdk.CSDKManager, but it is not
+     * part of the public Android SDK used to compile FreeKiosk. Reflection is
+     * therefore used only to reach the vendor wrapper; the actual privileged
+     * StatusBarManager.disable() call happens inside system_server.
+     */
+    private fun setNavigationButtonsHidden(hidden: Boolean): Boolean {
+        synchronized(csdkLock) {
+            return try {
+                if (csdkManager == null ||
+                    csdkHideHomeMethod == null ||
+                    csdkHideMenuMethod == null
+                ) {
+                    val clazz = Class.forName("android.app.csdk.CSDKManager")
+                    val constructor = clazz.getConstructor(android.content.Context::class.java)
+                    csdkManager = constructor.newInstance(this)
+                    csdkHideHomeMethod = clazz.getMethod(
+                        "hideHomeSoftKey",
+                        Boolean::class.javaPrimitiveType!!
+                    )
+                    csdkHideMenuMethod = clazz.getMethod(
+                        "hideMenuSoftKey",
+                        Boolean::class.javaPrimitiveType!!
+                    )
+                }
+
+                val homeResult =
+                    csdkHideHomeMethod!!.invoke(csdkManager, hidden) as? Boolean ?: false
+                val menuResult =
+                    csdkHideMenuMethod!!.invoke(csdkManager, hidden) as? Boolean ?: false
+
+                Log.i(
+                    TAG,
+                    "CSDK navigation hidden=$hidden, homeResult=$homeResult, " +
+                        "recentsResult=$menuResult"
+                )
+
+                homeResult && menuResult
+            } catch (e: Throwable) {
+                Log.e(TAG, "CSDK navigation control failed: ${e.message}", e)
+                false
+            }
+        }
     }
 
     /**
-     * Navigation blocker is allowed only for packages explicitly permitted
-     * by Device Owner Lock Task policy. This keeps SystemUI, IME, permission
-     * dialogs, and unrelated packages outside the blocker path.
+     * Navigation control is applied only to packages explicitly permitted by
+     * Device Owner Lock Task policy.
      */
     private fun isLockTaskWhitelistedPackage(pkg: String): Boolean {
         if (pkg == packageName) return false
@@ -81,135 +122,6 @@ class FreeKioskAccessibilityService : AccessibilityService() {
         } catch (e: Exception) {
             Log.w(TAG, "Could not check Lock Task package '$pkg': ${e.message}")
             false
-        }
-    }
-
-    private fun removeNavigationBlocker() {
-        if (navigationBlockerViews.isEmpty()) {
-            navigationBlockerActive = false
-            return
-        }
-
-        try {
-            val windowManager = getSystemService(
-                android.content.Context.WINDOW_SERVICE
-            ) as android.view.WindowManager
-
-            navigationBlockerViews.values.toList().forEach { view ->
-                try {
-                    windowManager.removeView(view)
-                } catch (_: Exception) {
-                }
-            }
-        } catch (_: Exception) {
-        }
-
-        navigationBlockerViews.clear()
-        navigationBlockerActive = false
-        Log.i(TAG, "Navigation blocker REMOVED")
-    }
-
-    private fun updateNavigationBlocker(active: Boolean) {
-        if (!active) {
-            removeNavigationBlocker()
-            return
-        }
-
-        if (navigationBlockerActive && navigationBlockerViews.size == 2) {
-            return
-        }
-
-        removeNavigationBlocker()
-
-        try {
-            val windowManager = getSystemService(
-                android.content.Context.WINDOW_SERVICE
-            ) as android.view.WindowManager
-
-            val displaySize = android.graphics.Point()
-            @Suppress("DEPRECATION")
-            windowManager.defaultDisplay.getRealSize(displaySize)
-
-            val width = displaySize.x
-            val height = displaySize.y
-
-            val navBarResId = resources.getIdentifier(
-                "navigation_bar_height",
-                "dimen",
-                "android"
-            )
-
-            val navBarHeight = if (navBarResId != 0) {
-                resources.getDimensionPixelSize(navBarResId)
-            } else {
-                60
-            }
-
-            // On Lenovo TB305XU (1340x800 logical display), the 3-button
-            // navigation centers are approximately:
-            // Back = 1/6, Home = 1/2, Recents = 5/6.
-            // Block only Home + Recents so the FreeKiosk Return Button
-            // at the corners remains usable.
-            val blockWidth = (navBarHeight * 2).coerceAtLeast(96)
-            val bottom = navBarHeight.coerceAtMost(height)
-            val lefts = listOf(
-                (width / 2) - (blockWidth / 2),
-                ((width * 5) / 6) - (blockWidth / 2)
-            )
-
-            lefts.forEachIndexed { index, left ->
-                val key = if (index == 0) "home" else "recents"
-
-                val blockerView = View(this).apply {
-                    // Lenovo/ZUI navigation bar is black in the tested
-                    // three-button configuration. The opaque surface hides
-                    // the underlying ○ / ☰ glyphs rather than only blocking
-                    // their touch targets.
-                    setBackgroundColor(android.graphics.Color.TRANSPARENT)
-                    isClickable = true
-                    isFocusable = false
-                    contentDescription = "FreeKiosk navigation blocker: $key"
-                    setOnTouchListener { _, _ -> true }
-                }
-
-                val params = android.view.WindowManager.LayoutParams(
-                    blockWidth,
-                    bottom,
-                    android.view.WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
-                    android.view.WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                        android.view.WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
-                        android.view.WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
-                    android.graphics.PixelFormat.TRANSLUCENT
-                ).apply {
-                    gravity = android.view.Gravity.BOTTOM or android.view.Gravity.START
-                    x = left.coerceIn(0, (width - blockWidth).coerceAtLeast(0))
-                    y = 0
-
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                        setFitInsetsTypes(0)
-                    }
-
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                        layoutInDisplayCutoutMode =
-                            android.view.WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
-                    }
-
-                    title = "FreeKioskNavigationBlock-$key"
-                }
-
-                windowManager.addView(blockerView, params)
-                navigationBlockerViews[key] = blockerView
-            }
-
-            navigationBlockerActive = navigationBlockerViews.size == 2
-            Log.i(
-                TAG,
-                "Navigation blocker ACTIVE: ${width}x${height}, navBar=$navBarHeight, package blocker"
-            )
-        } catch (e: Exception) {
-            navigationBlockerViews.clear()
-            navigationBlockerActive = false
-            Log.e(TAG, "Navigation blocker FAILED: ${e.message}")
         }
     }
 
@@ -876,39 +788,23 @@ class FreeKioskAccessibilityService : AccessibilityService() {
             Log.w(TAG, "Failed to update foreground package for blocking overlays: ${e.message}")
         }
 
-        // Navigation blocker lifecycle:
-        // - External Lock Task app -> blocker ON
-        // - Return to FreeKiosk -> blocker OFF
-        // - Transient SystemUI/IME events -> keep current state
-        Log.i(
-            TAG,
-            "A11y EVENT: type=${event.eventType}, pkg=$pkg, " +
-                "active=$navigationBlockerActive, views=${navigationBlockerViews.size}"
-        )
-
+        // Navigation lifecycle:
+        // - external Lock Task app -> disable Home + Recents via Lenovo CSDK
+        // - FreeKiosk -> remove only those CSDK disable bits
+        // - transient SystemUI/IME events are ignored.
         if (pkg == packageName) {
-            Log.i(TAG, "A11y EVENT -> FreeKiosk package detected, removing navigation blocker")
-            updateNavigationBlocker(false)
-        } else if (!isTransientSystemPackage(pkg) && isLockTaskWhitelistedPackage(pkg)) {
-            Log.i(TAG, "A11y EVENT -> whitelisted external package '$pkg', enabling navigation blocker")
-            updateNavigationBlocker(true)
-        }
-    }
-
-    /**
-     * Lenovo/ZUI can tear down Accessibility Overlay windows during a display
-     * configuration change (for example when USB/charging state changes).
-     * The foreground app does not necessarily emit another WINDOW_STATE_CHANGED
-     * event, so the old blocker state can remain marked active while its actual
-     * windows have been removed. Recreate the blocker whenever configuration
-     * changes, but only if it was active before the change.
-     */
-    override fun onConfigurationChanged(newConfig: android.content.res.Configuration) {
-        super.onConfigurationChanged(newConfig)
-        if (navigationBlockerActive) {
-            Log.i(TAG, "Configuration changed -> reapplying navigation blocker")
-            navigationBlockerActive = false
-            updateNavigationBlocker(true)
+            Log.i(TAG, "A11y EVENT -> FreeKiosk package detected, restoring navigation buttons")
+            setNavigationButtonsHidden(false)
+        } else if (pkg != "com.android.systemui" &&
+            pkg != "android" &&
+            pkg != "com.google.android.inputmethod.latin" &&
+            pkg != "com.android.inputmethod.latin" &&
+            pkg != "com.google.android.permissioncontroller" &&
+            pkg != "com.android.permissioncontroller" &&
+            isLockTaskWhitelistedPackage(pkg)
+        ) {
+            Log.i(TAG, "A11y EVENT -> whitelisted external package '$pkg', hiding Home + Recents via CSDK")
+            setNavigationButtonsHidden(true)
         }
     }
 
@@ -917,7 +813,7 @@ class FreeKioskAccessibilityService : AccessibilityService() {
     }
 
     override fun onDestroy() {
-        removeNavigationBlocker()
+        setNavigationButtonsHidden(false)
         super.onDestroy()
         instance = null
         Log.i(TAG, "FreeKiosk Accessibility Service disconnected")
