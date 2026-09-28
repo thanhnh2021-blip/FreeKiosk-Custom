@@ -1237,7 +1237,7 @@ class MainActivity : ReactActivity() {
 
   override fun dispatchTouchEvent(ev: android.view.MotionEvent?): Boolean {
     // Observe (never consume) the initial press of each gesture.
-    if (ev != null && ev.actionMasked == android.view.MotionEvent.ACTION_DOWN && kioskScreenActive) {
+    if (ev != null && ev.actionMasked == android.view.MotionEvent.ACTION_DOWN) {
       refreshTapSettingsConfig()
       if (tapSettingsEnabled) {
         handleTapForSettings(ev.rawX, ev.rawY)

@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import { View, Text, TouchableOpacity, StyleSheet, Image, ImageBackground, ScrollView, FlatList, Pressable, useWindowDimensions } from 'react-native';
+import { View, Text, TouchableOpacity, StyleSheet, Image, ImageBackground, ScrollView, useWindowDimensions } from 'react-native';
 import StatusBar from './StatusBar';
 import Icon from './Icon';
 import AppLauncherModule, { AppInfo } from '../utils/AppLauncherModule';
@@ -82,24 +82,41 @@ const ExternalAppOverlay: React.FC<ExternalAppOverlayProps> = ({
   const firstTapYRef = useRef<number>(0);
   const TAP_PROXIMITY_RADIUS = 80;
 
-  // Home background double-tap -> native screen lock.
-  // The Pressable sits underneath the header/grid/buttons, so app-icon taps do
-  // not trigger the lock gesture.
   const backgroundDoubleTapTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const backgroundTapCountRef = useRef<number>(0);
   const lastBackgroundTapTimeRef = useRef<number>(0);
+  const lastBackgroundTapXRef = useRef<number>(0);
+  const lastBackgroundTapYRef = useRef<number>(0);
   const DOUBLE_TAP_TIMEOUT_MS = 350;
 
-  const handleBackgroundPress = useCallback(() => {
+  const cancelBackgroundDoubleTap = useCallback(() => {
+    backgroundTapCountRef.current = 0;
+    lastBackgroundTapTimeRef.current = 0;
+    lastBackgroundTapXRef.current = 0;
+    lastBackgroundTapYRef.current = 0;
+    if (backgroundDoubleTapTimerRef.current) {
+      clearTimeout(backgroundDoubleTapTimerRef.current);
+      backgroundDoubleTapTimerRef.current = null;
+    }
+  }, []);
+
+  const handleBackgroundPress = useCallback((event: any) => {
     const now = Date.now();
+    const tapX = event.nativeEvent.pageX ?? 0;
+    const tapY = event.nativeEvent.pageY ?? 0;
     const elapsed = now - lastBackgroundTapTimeRef.current;
+    const dx = tapX - lastBackgroundTapXRef.current;
+    const dy = tapY - lastBackgroundTapYRef.current;
+    const distance = Math.sqrt(dx * dx + dy * dy);
 
-    if (elapsed > 0 && elapsed <= DOUBLE_TAP_TIMEOUT_MS) {
-      lastBackgroundTapTimeRef.current = 0;
+    const isSecondTap =
+      elapsed > 0 &&
+      elapsed <= DOUBLE_TAP_TIMEOUT_MS &&
+      distance <= TAP_PROXIMITY_RADIUS;
 
-      if (backgroundDoubleTapTimerRef.current) {
-        clearTimeout(backgroundDoubleTapTimerRef.current);
-        backgroundDoubleTapTimerRef.current = null;
-      }
+    if (isSecondTap) {
+      cancelBackgroundDoubleTap();
+      console.log('[ExternalAppOverlay] BACKGROUND_DOUBLE_TAP -> turnScreenOff');
 
       KioskModule.turnScreenOff().catch(error => {
         console.warn(
@@ -110,27 +127,27 @@ const ExternalAppOverlay: React.FC<ExternalAppOverlayProps> = ({
       return;
     }
 
+    backgroundTapCountRef.current = 1;
     lastBackgroundTapTimeRef.current = now;
+    lastBackgroundTapXRef.current = tapX;
+    lastBackgroundTapYRef.current = tapY;
 
     if (backgroundDoubleTapTimerRef.current) {
       clearTimeout(backgroundDoubleTapTimerRef.current);
     }
 
     backgroundDoubleTapTimerRef.current = setTimeout(() => {
+      backgroundTapCountRef.current = 0;
       lastBackgroundTapTimeRef.current = 0;
+      lastBackgroundTapXRef.current = 0;
+      lastBackgroundTapYRef.current = 0;
       backgroundDoubleTapTimerRef.current = null;
     }, DOUBLE_TAP_TIMEOUT_MS);
-  }, []);
+  }, [cancelBackgroundDoubleTap]);
 
   useEffect(() => {
-    return () => {
-      if (backgroundDoubleTapTimerRef.current) {
-        clearTimeout(backgroundDoubleTapTimerRef.current);
-        backgroundDoubleTapTimerRef.current = null;
-      }
-      lastBackgroundTapTimeRef.current = 0;
-    };
-  }, []);
+    return () => cancelBackgroundDoubleTap();
+  }, [cancelBackgroundDoubleTap]);
 
   // tap_anywhere mode: N-tap with spatial proximity check (identical to WebView)
   const handleGridTouch = useCallback((event: any) => {
@@ -237,15 +254,24 @@ const ExternalAppOverlay: React.FC<ExternalAppOverlayProps> = ({
     }
   };
 
-  const renderAppIcon = ({ item }: { item: ManagedApp }) => {
+  const renderAppIcon = (item: ManagedApp) => {
     const label = appLabels[item.packageName] || item.displayName || item.packageName.split('.').pop() || '?';
     const initials = label.substring(0, 2).toUpperCase();
     const iconUri = appIcons[item.packageName];
-    
+
     return (
       <TouchableOpacity
+        key={item.packageName}
         style={[styles.appIconContainer, { width: appTileWidth }]}
         onPress={() => handleAppPress(item.packageName)}
+        onStartShouldSetResponder={() => true}
+        onResponderRelease={event => {
+          handleGridTouch(event);
+          cancelBackgroundDoubleTap();
+        }}
+        onPressIn={event => {
+          cancelBackgroundDoubleTap();
+        }}
         activeOpacity={0.7}
       >
         {iconUri ? (
@@ -266,6 +292,19 @@ const ExternalAppOverlay: React.FC<ExternalAppOverlayProps> = ({
     );
   };
 
+  const renderAppRows = () => {
+    const rows: ManagedApp[][] = [];
+    for (let i = 0; i < homeScreenApps.length; i += APP_GRID_NUM_COLUMNS) {
+      rows.push(homeScreenApps.slice(i, i + APP_GRID_NUM_COLUMNS));
+    }
+
+    return rows.map((row, rowIndex) => (
+      <View key={`app-row-${rowIndex}`} style={styles.appGridRow}>
+        {row.map(renderAppIcon)}
+      </View>
+    ));
+  };
+
   // Multi-app mode: app is currently running — show empty view (Android shows the app)
   if (isMultiAppMode && isAppLaunched) {
     return <View style={styles.container} />;
@@ -274,73 +313,69 @@ const ExternalAppOverlay: React.FC<ExternalAppOverlayProps> = ({
   // Multi-app mode: show app grid (home screen)
   if (isMultiAppMode && !isAppLaunched) {
     return (
-      <ImageBackground
-        source={multiAppBackgroundPath ? { uri: multiAppBackgroundPath } : require('../assets/images/multiapp_background.jpg')}
+      <View
         style={styles.multiAppBackground}
-        resizeMode="cover"
-        onTouchStart={handleGridTouch}
+        onStartShouldSetResponder={() => true}
+        onResponderRelease={(event) => {
+          console.log('[ExternalAppOverlay] ROOT_RESPONDER_RELEASE');
+          handleGridTouch(event);
+          handleBackgroundPress(event);
+        }}
       >
-        <View style={styles.multiAppOverlay}>
-        <Pressable
+        <ImageBackground
+          source={multiAppBackgroundPath ? { uri: multiAppBackgroundPath } : require('../assets/images/multiapp_background.jpg')}
           style={StyleSheet.absoluteFillObject}
-          onPress={handleBackgroundPress}
-          accessibilityRole="button"
-          accessibilityLabel="Lock screen"
+          resizeMode="cover"
+          pointerEvents="none"
         />
-        {showStatusBar && (
-          <StatusBar
-            showBattery={showBattery}
-            showWifi={showWifi}
-            showBluetooth={showBluetooth}
-            showVolume={showVolume}
-            showTime={showTime}
-            theme={statusBarTheme}
-          />
-        )}
-        <View style={styles.multiAppHeader}>
-          <Image
-            source={require('../assets/images/logo_circle.png')}
-            style={styles.miniLogo}
-            resizeMode="contain"
-          />
-          <Text style={styles.multiAppTitle}>FreeKiosk</Text>
-        </View>
-        <FlatList
-          pointerEvents="box-none"
-          data={homeScreenApps}
-          renderItem={renderAppIcon}
-          keyExtractor={item => item.packageName}
-          numColumns={APP_GRID_NUM_COLUMNS}
-          contentContainerStyle={styles.appGrid}
-          columnWrapperStyle={styles.appGridRow}
-        />
-        
-        {/* Test mode warning */}
-        {backButtonMode === 'test' && (
-          <View style={styles.testModeBar}>
-            <Text style={styles.testModeText}>Test Mode — Back button returns to settings</Text>
-          </View>
-        )}
+        <View style={styles.multiAppOverlay}>
+            {showStatusBar && (
+              <StatusBar
+                showBattery={showBattery}
+                showWifi={showWifi}
+                showBluetooth={showBluetooth}
+                showVolume={showVolume}
+                showTime={showTime}
+                theme={statusBarTheme}
+              />
+            )}
+            <View style={styles.multiAppHeader} pointerEvents="none">
+              <Image
+                source={require('../assets/images/logo_circle.png')}
+                style={styles.miniLogo}
+                resizeMode="contain"
+              />
+              <Text style={styles.multiAppTitle}>FreeKiosk</Text>
+            </View>
 
-        {/* Fixed button mode: floating return button (same as WebView) */}
-        {returnMode === 'button' && (
-          <TouchableOpacity
-            style={[
-              styles.floatingReturnButton,
-              buttonPositionStyle,
-              {
-                opacity: returnButtonVisible ? 1 : 0,
-                backgroundColor: returnButtonVisible ? '#2b7fff' : 'transparent',
-              },
-            ]}
-            activeOpacity={1}
-            onPress={handleGridButtonTap}
-          >
-            <Icon name="arrow-u-left-top" size={28} color="#fff" style={{ opacity: returnButtonVisible ? 1 : 0 }} />
-          </TouchableOpacity>
-        )}
+            <View style={styles.appGrid}>
+              {renderAppRows()}
+            </View>
+
+            {backButtonMode === 'test' && (
+              <View style={styles.testModeBar} pointerEvents="none">
+                <Text style={styles.testModeText}>Test Mode — Back button returns to settings</Text>
+              </View>
+            )}
+
+            {returnMode === 'button' && (
+              <TouchableOpacity
+                style={[
+                  styles.floatingReturnButton,
+                  buttonPositionStyle,
+                  {
+                    opacity: returnButtonVisible ? 1 : 0,
+                    backgroundColor: returnButtonVisible ? '#2b7fff' : 'transparent',
+                  },
+                ]}
+                activeOpacity={1}
+                onPress={handleGridButtonTap}
+              >
+                <Icon name="arrow-u-left-top" size={28} color="#fff" style={{ opacity: returnButtonVisible ? 1 : 0 }} />
+              </TouchableOpacity>
+            )}
         </View>
-      </ImageBackground>
+      </View>
     );
   }
 
@@ -629,8 +664,10 @@ const styles = StyleSheet.create({
   appGrid: {
     paddingHorizontal: 16,
     paddingTop: 20,
+    width: '100%',
   },
   appGridRow: {
+    flexDirection: 'row',
     justifyContent: 'flex-start',
     gap: 8,
     marginBottom: 16,

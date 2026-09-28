@@ -684,19 +684,46 @@ class KioskModule(reactContext: ReactApplicationContext) : ReactContextBaseJavaM
                                     lockTaskFeatures = lockTaskFeatures or DevicePolicyManager.LOCK_TASK_FEATURE_HOME
                                 }
 
-                                // #208 — Keep the system keyguard alive while in lock task so a native
-                                // screen-lock (PIN/pattern/password) actually prompts after screen off/on.
-                                // Without LOCK_TASK_FEATURE_KEYGUARD, Android disables the keyguard in
-                                // LockTask mode and the configured screen-lock never appears. Gated on the
-                                // opt-in "System screen-lock compatibility" setting AND a secure lock being set.
+                                // #208 / Lenovo ZUI wake compatibility:
+                                // Keep the Android keyguard subsystem available while in Lock Task.
+                                // This is required after DevicePolicyManager.lockNow() so Lenovo/ZUI
+                                // can still handle its native double-tap-to-wake gesture when the
+                                // screen is off. The existing "System screen-lock compatibility"
+                                // setting still controls whether a secure native Android lock is
+                                // expected, but the keyguard feature itself must remain enabled.
                                 val screenLockCompat = BootReceiver.readScreenLockCompatFlag(reactApplicationContext) &&
                                     BootReceiver.isDeviceSecure(reactApplicationContext)
-                                if (screenLockCompat) {
-                                    lockTaskFeatures = lockTaskFeatures or DevicePolicyManager.LOCK_TASK_FEATURE_KEYGUARD
+
+                                lockTaskFeatures = lockTaskFeatures or DevicePolicyManager.LOCK_TASK_FEATURE_KEYGUARD
+
+                                // #243 / Lenovo ZUI double-tap wake:
+                                // An older kiosk policy can persistently disable the Android keyguard.
+                                // In that state LOCK_TASK_FEATURE_KEYGUARD alone has no effect.
+                                // Re-enable the keyguard policy before entering Lock Task so the
+                                // lockNow() -> screen-off path still leaves the native keyguard/wake
+                                // subsystem available to Lenovo/ZUI.
+                                try {
+                                    // DevicePolicyManager exposes no public isKeyguardDisabled() getter.
+                                    // Re-enable the keyguard policy unconditionally; this is safe for the
+                                    // Device Owner and clears any persisted keyguard-disable state from
+                                    // an older kiosk configuration.
+                                    val reenabled = dpm.setKeyguardDisabled(adminComponent, false)
+                                    android.util.Log.d(
+                                        "KioskModule",
+                                        "Keyguard policy re-enabled before Lock Task: success=$reenabled"
+                                    )
+                                } catch (e: Exception) {
+                                    android.util.Log.w(
+                                        "KioskModule",
+                                        "Could not re-enable keyguard policy before Lock Task: ${e.message}"
+                                    )
                                 }
 
                                 dpm.setLockTaskFeatures(adminComponent, lockTaskFeatures)
-                                android.util.Log.d("KioskModule", "Lock task features set: blockPowerButton=${!allowPowerButton}, notifications=$allowNotifications, systemInfo=$allowSystemInfo, keyguard=$screenLockCompat (flags=$lockTaskFeatures)")
+                                android.util.Log.d(
+                                    "KioskModule",
+                                    "Lock task features set: blockPowerButton=${!allowPowerButton}, notifications=$allowNotifications, systemInfo=$allowSystemInfo, keyguard=true, screenLockCompat=$screenLockCompat (flags=$lockTaskFeatures)"
+                                )
                             }
 
                             dpm.setLockTaskPackages(adminComponent, uniqueWhitelist.toTypedArray())
